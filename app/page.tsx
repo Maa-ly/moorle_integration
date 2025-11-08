@@ -21,7 +21,7 @@ export default function Home() {
         {/* Header */}
         <header className="mb-4 text-center px-2">
           <h1 className="text-xl font-bold text-white mb-2 w-full">
-            <span className="block">Welcome to Moolre Pay —</span>{' '}
+            <span className="block">Welcome to Moolre  —</span>{' '}
             <span className="rotating-text-container inline-block mt-2">
               {rotatingTexts.map((text, index) => (
                 <span key={index} className="rotating-text text-yellow-500 dark:text-yellow-400 font-bold text-sm">

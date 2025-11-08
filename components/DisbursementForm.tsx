@@ -9,6 +9,21 @@ import { ResponseDisplay } from './ui/ResponseDisplay';
 import { Alert } from './ui/Alert';
 import { validateAccountName, transferFunds, checkTransferStatus, CHANNELS } from '../lib/moolre-api';
 
+const getChannelLabel = (channel: number) => {
+  switch (channel) {
+    case CHANNELS.BANK:
+      return 'Bank Account';
+    case CHANNELS.MTN:
+      return 'MTN Mobile Money';
+    case CHANNELS.VODAFONE:
+      return 'Vodafone Cash';
+    case CHANNELS.AIRTELTIGO:
+      return 'AirtelTigo Money';
+    default:
+      return 'Mobile Money';
+  }
+};
+
 interface DisbursementFormData {
   recipientNumber: string; // Mobile money number or bank account number
   accountName: string;
@@ -26,6 +41,19 @@ interface ValidationResponse {
   isValid: boolean;
   accountName?: string;
   message?: string;
+}
+
+interface ConfirmationDetails {
+  amount: string;
+  currency: string;
+  accountName: string;
+  receiver: string;
+  channel: number;
+  reference?: string;
+  description?: string;
+  message?: string;
+  matches: boolean;
+  enteredName?: string;
 }
 
 export const DisbursementForm: React.FC = () => {
@@ -49,6 +77,8 @@ export const DisbursementForm: React.FC = () => {
   const [senderSmsResponse, setSenderSmsResponse] = useState<unknown>(null);
   const [isValidating, setIsValidating] = useState(false);
   const [isDisbursing, setIsDisbursing] = useState(false);
+  const [isConfirmationOpen, setIsConfirmationOpen] = useState(false);
+  const [confirmationDetails, setConfirmationDetails] = useState<ConfirmationDetails | null>(null);
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
   const [isSendingSMS, setIsSendingSMS] = useState(false);
   const [error, setError] = useState<string>('');
@@ -391,25 +421,91 @@ export const DisbursementForm: React.FC = () => {
         setError('Account name and bank code are required when sending to bank accounts');
         return;
       }
-      
-      // warn if name doesn't match
-      if (!nameMatches && formData.accountName) {
-        const shouldProceed = window.confirm(
-          'Account name does not match the validated name. It is recommended to verify the account name before transferring. Do you want to proceed anyway?'
-        );
-        if (!shouldProceed) {
-          return;
-        }
-      } else if (!validationResponse && formData.accountName) {
-        const shouldProceed = window.confirm(
-          'Account name validation is in progress or failed. It is recommended to verify the account name before transferring. Do you want to proceed anyway?'
-        );
-        if (!shouldProceed) {
-          return;
-        }
-      }
     }
 
+    setError('');
+    setSuccessMessage('');
+
+    setIsValidating(true);
+    try {
+      const validationResult = await validateAccountName(
+        formData.recipientNumber,
+        formData.bankCode || '',
+        formData.channel,
+        formData.currency
+      );
+
+      const auditPayload = {
+        timestamp: new Date().toISOString(),
+        receiver: formData.recipientNumber,
+        channel: formData.channel,
+        channelLabel: getChannelLabel(formData.channel),
+        amount: formData.amount,
+        currency: formData.currency,
+        reference: formData.reference,
+        success: validationResult.success,
+        accountName: validationResult.accountName,
+        message: validationResult.message && validationResult.message.trim().toLowerCase() !== 'successful'
+          ? validationResult.message
+          : undefined,
+        error: validationResult.error,
+      };
+
+      console.info('Moolre recipient validation', auditPayload);
+
+      if (!validationResult.success || !validationResult.accountName) {
+        setValidationResponse({
+          isValid: false,
+          message: validationResult.error || validationResult.message || 'Unable to validate recipient details',
+        });
+        setIsValidating(false);
+        setError(validationResult.error || validationResult.message || 'Unable to validate recipient details');
+        return;
+      }
+
+      const apiName = validationResult.accountName.trim().toLowerCase();
+      const enteredName = formData.accountName.trim().toLowerCase();
+      const matches =
+        formData.channel === CHANNELS.BANK ? enteredName === apiName : true;
+
+      setValidationResponse({
+        isValid: true,
+        accountName: validationResult.accountName,
+        message: validationResult.message || 'Recipient validated successfully',
+      });
+      setValidatedName(validationResult.accountName);
+      setNameMatches(matches);
+
+      setIsValidating(false);
+
+      setConfirmationDetails({
+        amount: formData.amount,
+        currency: formData.currency,
+        accountName: validationResult.accountName,
+        receiver: formData.recipientNumber,
+        channel: formData.channel,
+        reference: formData.reference || undefined,
+        description: formData.description || undefined,
+        message: validationResult.message,
+        matches,
+        enteredName: formData.accountName,
+      });
+      setIsConfirmationOpen(true);
+      return;
+    } catch (validationError) {
+      setIsValidating(false);
+      const errorMessage =
+        validationError instanceof Error ? validationError.message : 'Recipient validation failed';
+      setError(errorMessage);
+      setValidationResponse({
+        isValid: false,
+        message: errorMessage,
+      });
+      return;
+    }
+  };
+
+  const executeDisbursement = async () => {
     setIsDisbursing(true);
     setError('');
     setSuccessMessage('');
@@ -447,24 +543,19 @@ export const DisbursementForm: React.FC = () => {
           externalRef: response.externalRef,
         });
         
-        // handle different statuses
         if (response.txstatus === 1) {
-          // success! send confirmation sms
           if (formData.recipientPhone || formData.senderPhone) {
             sendConfirmationSMS(response.transactionId, formData.amount, formData.currency);
           }
         } else if (response.txstatus === 0) {
-          // status 0 = pending or failed (usually insufficient balance for mobile money)
           if (formData.channel !== CHANNELS.BANK) {
             sendFailureSMS(response.transactionId, formData.amount, formData.currency);
           } else {
-            // banks take longer, check again in a bit
             setTimeout(() => {
               handleCheckStatus(response.transactionId, response.externalRef || formData.reference);
             }, 3000);
           }
         } else if (response.txstatus === 2) {
-          // failed, send failure sms
           sendFailureSMS(response.transactionId, formData.amount, formData.currency);
         }
       } else {
@@ -476,14 +567,27 @@ export const DisbursementForm: React.FC = () => {
           error: errorMsg,
         });
       }
-      
-      setIsDisbursing(false);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Transfer failed';
       setError(errorMsg);
       setSuccessMessage('');
+    } finally {
       setIsDisbursing(false);
     }
+  };
+
+  const handleConfirmTransfer = () => {
+    setIsConfirmationOpen(false);
+    setConfirmationDetails(null);
+    void executeDisbursement();
+  };
+
+  const handleCancelConfirmation = () => {
+    setIsConfirmationOpen(false);
+    setConfirmationDetails(null);
+    setIsDisbursing(false);
+    setSuccessMessage('');
+    setError('Transfer cancelled. Please review the recipient details.');
   };
 
   const handleCheckStatus = async (transactionId?: string, externalRef?: string) => {
@@ -571,7 +675,75 @@ export const DisbursementForm: React.FC = () => {
   };
 
   return (
-    <Card>
+    <>
+      {isConfirmationOpen && confirmationDetails && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl dark:bg-gray-900 dark:text-gray-100">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Confirm Transfer
+            </h2>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+              You're about to send {confirmationDetails.currency} {confirmationDetails.amount} to the details below.
+            </p>
+
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800">
+                <span className="text-gray-500 dark:text-gray-400">Name</span>
+                <span className="font-medium text-gray-900 dark:text-gray-100">{confirmationDetails.accountName}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800">
+                <span className="text-gray-500 dark:text-gray-400">Number</span>
+                <span className="font-medium text-gray-900 dark:text-gray-100">{confirmationDetails.receiver}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800">
+                <span className="text-gray-500 dark:text-gray-400">Channel</span>
+                <span className="font-medium text-gray-900 dark:text-gray-100">{getChannelLabel(confirmationDetails.channel)}</span>
+              </div>
+              {confirmationDetails.reference && (
+                <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800">
+                  <span className="text-gray-500 dark:text-gray-400">Reference</span>
+                  <span className="font-medium text-gray-900 dark:text-gray-100">{confirmationDetails.reference}</span>
+                </div>
+              )}
+              {confirmationDetails.description && (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                  <span className="block text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Description</span>
+                  <span className="mt-1 block font-medium">{confirmationDetails.description}</span>
+                </div>
+              )}
+            </div>
+
+            {formData.channel === CHANNELS.BANK && confirmationDetails.enteredName && !confirmationDetails.matches && (
+              <div className="mt-4 rounded-lg border border-yellow-300 bg-yellow-50 p-3 text-sm text-yellow-800 dark:border-yellow-600/70 dark:bg-yellow-900/40 dark:text-yellow-200">
+                Entered account name “{confirmationDetails.enteredName}” does not match the validated name above. Please confirm the destination carefully before proceeding.
+              </div>
+            )}
+
+            {confirmationDetails.message && (
+              <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700 dark:border-blue-600/70 dark:bg-blue-900/40 dark:text-blue-200">
+                {confirmationDetails.message}
+              </div>
+            )}
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <Button type="button" variant="outline" onClick={handleCancelConfirmation}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                onClick={handleConfirmTransfer}
+                isLoading={isDisbursing}
+                disabled={isDisbursing}
+              >
+                Confirm Transfer
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Card>
       {/* Top Alert Messages */}
       {(error || successMessage) && (
         <div className="mb-3">
@@ -610,9 +782,9 @@ export const DisbursementForm: React.FC = () => {
               type="text"
               value={formData.recipientNumber}
               onChange={(e) => handleInputChange('recipientNumber', e.target.value)}
-              placeholder={formData.channel === CHANNELS.BANK ? "Enter account number" : "Enter mobile money number (e.g., 0246798993)"}
+              placeholder={formData.channel === CHANNELS.BANK ? "Enter account number" : "0246798993"}
               required
-              helperText={formData.channel === CHANNELS.BANK ? "Bank account number of recipient" : "Mobile money number of recipient"}
+              helperText={formData.channel === CHANNELS.BANK ? "Bank account number of recipient" : undefined}
             />
 
             {formData.channel === CHANNELS.BANK && (
@@ -702,7 +874,7 @@ export const DisbursementForm: React.FC = () => {
                 type="text"
                 value={formData.reference}
                 onChange={(e) => handleInputChange('reference', e.target.value)}
-                placeholder="Enter transaction reference"
+                placeholder="REF123456"
                 helperText="Unique reference"
               />
 
@@ -711,7 +883,7 @@ export const DisbursementForm: React.FC = () => {
                 type="text"
                 value={formData.description}
                 onChange={(e) => handleInputChange('description', e.target.value)}
-                placeholder="Enter transaction description"
+                placeholder="Payment description"
               />
             </div>
           </>
@@ -768,6 +940,7 @@ export const DisbursementForm: React.FC = () => {
 
       </form>
     </Card>
+    </>
   );
 };
 

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// In-memory storage for contacts (in production, use a database)
-// This is a simple implementation - you can extend it to use a database
+
 let contacts: Array<{ id: string; name: string; phone: string }> = [];
 
 export async function GET() {
