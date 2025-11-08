@@ -468,10 +468,16 @@ export const DisbursementForm: React.FC = () => {
       const matches =
         formData.channel === CHANNELS.BANK ? enteredName === apiName : true;
 
+      const normalizedMessage = validationResult.message?.trim();
+      const displayMessage =
+        normalizedMessage && !/^success/i.test(normalizedMessage)
+          ? validationResult.message
+          : undefined;
+
       setValidationResponse({
         isValid: true,
         accountName: validationResult.accountName,
-        message: validationResult.message || 'Recipient validated successfully',
+        message: displayMessage || 'Recipient validated successfully',
       });
       setValidatedName(validationResult.accountName);
       setNameMatches(matches);
@@ -486,7 +492,7 @@ export const DisbursementForm: React.FC = () => {
         channel: formData.channel,
         reference: formData.reference || undefined,
         description: formData.description || undefined,
-        message: validationResult.message,
+        message: displayMessage,
         matches,
         enteredName: formData.accountName,
       });
@@ -719,7 +725,7 @@ export const DisbursementForm: React.FC = () => {
               </div>
             )}
 
-            {confirmationDetails.message && (
+            {confirmationDetails.message && !/^success/i.test(confirmationDetails.message.trim()) && (
               <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700 dark:border-blue-600/70 dark:bg-blue-900/40 dark:text-blue-200">
                 {confirmationDetails.message}
               </div>
